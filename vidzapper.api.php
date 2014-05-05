@@ -391,8 +391,10 @@ class VidZapper
       $opts[CURLOPT_POSTFIELDS] = $params;
     } else {
       if(!empty($params)){
-        //$opts[CURLOPT_POSTFIELDS] = http_build_query($params, null, '&');
-        //self::debugLog('Posting -> ['.$opts[CURLOPT_POSTFIELDS].']');
+        if($params["ispost"]==true){
+          $opts[CURLOPT_POSTFIELDS] = http_build_query($params, null, '&');
+          self::debugLog('Posting -> ['.$opts[CURLOPT_POSTFIELDS].']');
+        }
       }
     }
     $opts[CURLOPT_URL] = $url;
@@ -560,6 +562,11 @@ class VidZapper
 
     function getCacheFileName($methodname,$parameters){
         return $_SERVER['DOCUMENT_ROOT']."/cache/".hash_hmac('sha1',json_encode(array($methodname,$parameters)),"cacheSecret").".json"; /*dont need this to change since Its just to make a file*/
+    }
+
+    function post($methodname,$parameters=array(),$raw=false,$cached=true,$xml=false){
+      $parameters["ispost"]=true;
+      return $this->fetch($methodname,$parameters,$raw,$cached,$xml);      
     }
 
     function fetch($methodname,$parameters=array(),$raw=false,$cached=true,$xml=false){
