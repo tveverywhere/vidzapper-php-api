@@ -112,7 +112,7 @@ class ApiKey
         return strftime("%Y%m%d%H%M",$dt);
     }
     
-    public function getURL($method,$parameters){
+    public function getURL($method,$v2,$parameters){
         $this->Method=$method;
         $this->Parameters=urldecode($parameters);
         $this->ValidTill=$this->getCurrentTimeStamp();
@@ -121,7 +121,8 @@ class ApiKey
         $rat=strpos($this->Secret,"r")+1;
         $url=substr($this->Secret, 0, $rat).hash_hmac('sha1', utf8_encode($appKey),utf8_encode($this->Secret)).'/'.$method.$parameters;
         VidZapper::debugLog($appKey);
-        return $url;
+        VidZapper::debugLog($url);
+        return $v2.$url;
     }
 
     public function __construct($key,$secret,$gap) {
@@ -338,15 +339,15 @@ class VidZapper
     // generic application level parameters
     $args = func_get_args();
     if (is_array($args[0])) {
-        return $this->_api($args[0],array());
+        return $this->_api($args[0],array(),$args[1]);
     }else{
         if(sizeof($args)>1){
-            return $this->_api($args[0],$args[1],array());
+            return $this->_api($args[0],$args[1],array(),$args[2],$args[3]);
         }
     }
   }
 
-  protected function _api($method,$id,$params) {
+  protected function _api($method,$id,$params,$custom,$v2='') {
     
     if(is_array($id)){
         $params=$id;
@@ -363,7 +364,7 @@ class VidZapper
     if($id!=0){$method.="/".$id;}
     $method=utf8_decode($method);
 
-    $this->rawResult=$this->makeRequest($this->getUrl($method,$params),$params);
+    $this->rawResult=$this->makeRequest($this->getUrl($method,$v2,$params),$params,$custom);
     self::debugLog($this->rawResult);
     $result = json_decode($this->rawResult);
 
@@ -384,7 +385,7 @@ class VidZapper
    * @param CurlHandler $ch optional initialized curl handle
    * @return String the response text
    */
-  protected function makeRequest($url, $params, $ch=null) {
+  protected function makeRequest($url, $params,$custom, $ch=null) {
     if (!$ch) {$ch = curl_init();}
     $opts = self::$CURL_OPTS;
     if ($this->useFileUploadSupport()) {
@@ -397,6 +398,13 @@ class VidZapper
         }
       }
     }
+    if($custom!='' && $custom == "DELETE"){
+      curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $custom);
+    }else if($custom!='' && $custom == "PUT")
+    {
+      curl_setopt($ch, CURLOPT_PUT, true);
+    }
+
     $opts[CURLOPT_URL] = $url;
     self::debugLog('<a target="_blank" href="'.$url.'">'.$url.'</a>');
     // disable the 'Expect: 100-continue' behaviour. This causes CURL to wait
@@ -438,14 +446,14 @@ class VidZapper
    * @param $params Array optional query parameters
    * @return String the URL for the given parameters
    */
-  protected function getUrl($method, $params=array()) {
+  protected function getUrl($method,$v2, $params=array()) {
     $url = self::$DOMAIN_MAP['api'];
     $query='';
     if (!empty($params)) {
         $query = '?' .http_build_query($params, null, '&');
     }
     self::debugLog($query);
-    return $url.$this->keyGen->getUrl($method,$query);
+    return $url.$this->keyGen->getUrl($method,$v2,$query);
   }
 
   /**
@@ -561,23 +569,37 @@ class VidZapper
     }
 
     function getCacheFileName($methodname,$parameters){
-        return $_SERVER['DOCUMENT_ROOT']."/cache/".hash_hmac('sha1',json_encode(array($methodname,$parameters)),"cacheSecret").".json"; /*dont need this to change since Its just to make a file*/
+        mkdir($_SERVER['DOCUMENT_ROOT']."/cache/".$_SERVER['HTTP_HOST'], 0700);
+        $filename = $methodname.'?'.http_build_query($parameters, null, '&');
+        return $_SERVER['DOCUMENT_ROOT']."/cache/".$_SERVER['HTTP_HOST'].'/'.md5($filename).".json";
     }
 
-    function post($methodname,$parameters=array(),$raw=false,$cached=true,$xml=false){
+    function post($methodname,$parameters=array(),$raw=false,$cached=false,$xml=false){
       $parameters["ispost"]=true;
       return $this->fetch($methodname,$parameters,$raw,$cached,$xml);      
     }
 
-    function fetch($methodname,$parameters=array(),$raw=false,$cached=true,$xml=false){
+    function v2($methodname,$custom='',$parameters=array()){
+      return $this->fetchCore(array('Accept: application/json','Accept-Charset: utf-8;'),$methodname,$parameters,false,true,$custom,$v2 = 'v2/');
+    }
+
+    function fetch($methodname,$parameters=array(),$raw=false,$cached=true,$xml=false,$custom='',$v2=''){
         if($xml==true){
-            return $this->fetchCore(array('Accept: application/xml','Accept-Charset: utf-8;'),$methodname,$parameters,$raw,$cached);
+            return $this->fetchCore(array('Accept: application/xml','Accept-Charset: utf-8;'),$methodname,$parameters,$raw,$cached,$custom,$v2);
         }else{
-            return $this->fetchCore(array('Accept: application/json','Accept-Charset: utf-8;'),$methodname,$parameters,$raw,$cached);
+            return $this->fetchCore(array('Accept: application/json','Accept-Charset: utf-8;'),$methodname,$parameters,$raw,$cached,$custom,$v2);
         }
     }
 
-    function fetchCore($headers,$methodname,$parameters=array(),$raw=false,$cached=true){
+    function delete($methodname,$parameters=array(),$raw=false,$cached=false,$xml=false){
+      return $this->fetch($methodname,$parameters,$raw,$cached,$xml,"DELETE");
+    }
+
+    function put($methodname,$parameters=array(),$raw=false,$cached=false,$xml=false){
+      return $this->fetch($methodname,$parameters,$raw,$cached,$xml,"PUT");
+    }
+
+    function fetchCore($headers,$methodname,$parameters=array(),$raw=false,$cached=true,$custom='',$v2=''){
         VidZapper::$CURL_OPTS[CURLOPT_HTTPHEADER]=$headers;
         $expires = (VidZapper::$CacheTimeout * 60); /*15 Minutes*/
         $cachetime = time()-$expires; /*5 Minutes*/
@@ -588,18 +610,17 @@ class VidZapper
             header("Pragma: public");
             header("Cache-Control: maxage=".$expires);
             header('Expires: ' . gmdate('D, d M Y H:i:s', time()+$expires) . ' GMT');
-            if(file_exists($cachefile) && ($cachetime < filemtime($cachefile)) && filesize($cachefile)>5){
-		        //echo "cached";
+            if(file_exists($cachefile) && !file_exists($cachefile.'.invalid') && ($cachetime < filemtime($cachefile)) && filesize($cachefile)>5){
 	            $fp = fopen($cachefile,'r');
 	            $data = fread($fp, filesize($cachefile));fclose($fp); 
 	            if(!$raw) return json_decode($data);
             }
         }
         if(!isset($data)){
-	        $result=$this->api($methodname,$parameters);
+	        $result=$this->api($methodname,$parameters,$custom,$v2);
 	        $data=$this->getLastRawResult();
 	        $this->writeObjectCache($cachefile,$data);
-            if(!$raw) return $result;
+          if(!$raw) return $result;
         }
         return $data;
     }
